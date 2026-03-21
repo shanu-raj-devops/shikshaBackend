@@ -6,9 +6,16 @@ import pickle
 import os
 import re
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = None
+
+def get_model():
+    global model
+    if model is None:
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+    return model
 
 def extract_chapters(pdf_path):
+    model = get_model()
     doc = fitz.open(pdf_path)
     chapters = []
     current_chapter = {"title": "Introduction", "content": "", "pages": []}
@@ -36,6 +43,7 @@ def extract_chapters(pdf_path):
 
 
 def build_faiss_index(chapters, index_path, meta_path):
+    model = get_model()
     texts = [ch["title"] + " " + ch["content"][:500] for ch in chapters]
     embeddings = model.encode(texts, show_progress_bar=False)
     embeddings = np.array(embeddings).astype("float32")

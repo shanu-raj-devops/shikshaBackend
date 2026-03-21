@@ -3,12 +3,19 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import pickle
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = None
+
+def get_model():
+    global model
+    if model is None:
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+    return model
 
 MAX_CONTEXT_CHARS = 4000
 TOP_K_CHAPTERS = 3
 
 def prune_context(query, index, chapters, top_k=TOP_K_CHAPTERS):
+    model = get_model()
     query_embedding = model.encode([query], show_progress_bar=False)
     query_embedding = np.array(query_embedding).astype("float32")
 
