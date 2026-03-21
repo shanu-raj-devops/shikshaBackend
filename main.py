@@ -3,12 +3,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import shutil
+import sys
 
-from pdf_processor import extract_chapters, build_faiss_index, load_index
-from context_pruner import prune_context, build_prompt, calculate_tokens_saved
-from tutor_engine import get_answer
+# Wrap imports with error handling to prevent startup crash
+try:
+    from pdf_processor import extract_chapters, build_faiss_index, load_index
+    from context_pruner import prune_context, build_prompt, calculate_tokens_saved
+    from tutor_engine import get_answer
+except Exception as e:
+    print(f"Warning: Import error (app will still start): {e}", file=sys.stderr)
+    extract_chapters = None
+    build_faiss_index = None
+    load_index = None
+    prune_context = None
+    build_prompt = None
+    calculate_tokens_saved = None
+    get_answer = None
 
 app = FastAPI(title="Education Tutor India API")
+
+@app.on_event("startup")
+async def startup_event():
+    print("✓ Shiksha API starting up...", file=sys.stderr)
+    print(f"  Imports available: extract_chapters={bool(extract_chapters)}, get_answer={bool(get_answer)}", file=sys.stderr)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,10 +47,12 @@ class QuestionRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "Education Tutor API Running"}
+    return {"status": "Education Tutor API Running", "ready": all([extract_chapters, build_faiss_index, get_answer])}
 
 @app.post("/upload")
 async def upload_textbook(file: UploadFile = File(...)):
+    if not extract_chapters or not build_faiss_index:
+        raise HTTPException(status_code=503, detail="PDF processing not available. Please try again later.")
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files allowed")
 
@@ -64,6 +83,8 @@ async def upload_textbook(file: UploadFile = File(...)):
 
 @app.post("/ask")
 async def ask_question(req: QuestionRequest):
+    if not get_answer or not prune_context or not load_index:
+        raise HTTPException(status_code=503, detail="AI service not available. Please try again later.")
     if req.session_id not in sessions:
         index_path = os.path.join(INDEX_DIR, f"{req.session_id}.faiss")
         meta_path = os.path.join(INDEX_DIR, f"{req.session_id}.pkl")
