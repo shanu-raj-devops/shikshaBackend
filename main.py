@@ -4,14 +4,28 @@ from pydantic import BaseModel
 import os
 import shutil
 import sys
+import traceback
 
-# Wrap imports with error handling to prevent startup crash
+print("Starting app initialization...", file=sys.stderr)
+
+# Wrap imports with error handling
 try:
+    print("Importing pdf_processor...", file=sys.stderr)
     from pdf_processor import extract_chapters, build_faiss_index, load_index
+    print("✓ pdf_processor imported", file=sys.stderr)
+    
+    print("Importing context_pruner...", file=sys.stderr)
     from context_pruner import prune_context, build_prompt, calculate_tokens_saved
+    print("✓ context_pruner imported", file=sys.stderr)
+    
+    print("Importing tutor_engine...", file=sys.stderr)
     from tutor_engine import get_answer
+    print("✓ tutor_engine imported", file=sys.stderr)
+    
 except Exception as e:
-    print(f"Warning: Import error (app will still start): {e}", file=sys.stderr)
+    print(f"❌ Import error: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
     extract_chapters = None
     build_faiss_index = None
     load_index = None
@@ -21,11 +35,6 @@ except Exception as e:
     get_answer = None
 
 app = FastAPI(title="Education Tutor India API")
-
-@app.on_event("startup")
-async def startup_event():
-    print("✓ Shiksha API starting up...", file=sys.stderr)
-    print(f"  Imports available: extract_chapters={bool(extract_chapters)}, get_answer={bool(get_answer)}", file=sys.stderr)
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,12 +56,10 @@ class QuestionRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "Education Tutor API Running", "ready": all([extract_chapters, build_faiss_index, get_answer])}
+    return {"status": "Education Tutor API Running"}
 
 @app.post("/upload")
 async def upload_textbook(file: UploadFile = File(...)):
-    if not extract_chapters or not build_faiss_index:
-        raise HTTPException(status_code=503, detail="PDF processing not available. Please try again later.")
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files allowed")
 
@@ -83,72 +90,33 @@ async def upload_textbook(file: UploadFile = File(...)):
 
 @app.post("/ask")
 async def ask_question(req: QuestionRequest):
-    try:
-        if not get_answer or not prune_context or not load_index:
-            raise HTTPException(status_code=503, detail="AI service not available.")
-
-        # ✅ session check
-        if req.session_id not in sessions:
-            index_path = os.path.join(INDEX_DIR, f"{req.session_id}.faiss")
-            meta_path = os.path.join(INDEX_DIR, f"{req.session_id}.pkl")
-
-            if os.path.exists(index_path) and os.path.exists(meta_path):
-                sessions[req.session_id] = {
-                    "index_path": index_path,
-                    "meta_path": meta_path
-                }
-            else:
-                return {"answer": "Session not found. Please upload again."}
-
-        session = sessions[req.session_id]
-
-        index, chapters = load_index(session["index_path"], session["meta_path"])
-
-        # ✅ SAFE CHECK 1
-        if not chapters:
-            return {"answer": "No content found in uploaded PDF."}
-
-        pruned = prune_context(req.question, index, chapters)
-
-        # ✅ SAFE CHECK 2 (MOST IMPORTANT)
-        if not pruned:
-            return {
-                "answer": "I couldn't find relevant content. Try another question 😊",
-                "context_stats": {
-                    "reduction_percent": 0,
-                    "chapters_used": 0,
-                    "total_chapters": len(chapters)
-                },
-                "tokens_used": {
-                    "total_tokens": 0
-                },
-                "chapters_referenced": []
+    if req.session_id not in sessions:
+        index_path = os.path.join(INDEX_DIR, f"{req.session_id}.faiss")
+        meta_path = os.path.join(INDEX_DIR, f"{req.session_id}.pkl")
+        if os.path.exists(index_path) and os.path.exists(meta_path):
+            sessions[req.session_id] = {
+                "index_path": index_path,
+                "meta_path": meta_path
             }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found. Please upload a textbook first.")
 
-        stats = calculate_tokens_saved(chapters, pruned)
-        prompt = build_prompt(req.question, pruned)
+    session = sessions[req.session_id]
+    index, chapters = load_index(session["index_path"], session["meta_path"])
 
-        result = get_answer(prompt)
+    pruned = prune_context(req.question, index, chapters)
+    stats = calculate_tokens_saved(chapters, pruned)
+    prompt = build_prompt(req.question, pruned)
 
-        return {
-            "answer": result["answer"],
-            "context_stats": stats,
-            "tokens_used": result["tokens_used"],
-            "chapters_referenced": [ch["title"] for ch in pruned]
-        }
+    result = get_answer(prompt)
 
-    except Exception as e:
-        print("ERROR in /ask:", str(e))
-        return {
-            "answer": "Something went wrong. Please try again later.",
-            "error": str(e)
-        }
+    return {
+        "answer": result["answer"],
+        "context_stats": stats,
+        "tokens_used": result["tokens_used"],
+        "chapters_referenced": [ch["title"] for ch in pruned]
+    }
 
 @app.get("/sessions")
 def list_sessions():
     return {"sessions": list(sessions.keys())}
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
