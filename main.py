@@ -83,34 +83,66 @@ async def upload_textbook(file: UploadFile = File(...)):
 
 @app.post("/ask")
 async def ask_question(req: QuestionRequest):
-    if not get_answer or not prune_context or not load_index:
-        raise HTTPException(status_code=503, detail="AI service not available. Please try again later.")
-    if req.session_id not in sessions:
-        index_path = os.path.join(INDEX_DIR, f"{req.session_id}.faiss")
-        meta_path = os.path.join(INDEX_DIR, f"{req.session_id}.pkl")
-        if os.path.exists(index_path) and os.path.exists(meta_path):
-            sessions[req.session_id] = {
-                "index_path": index_path,
-                "meta_path": meta_path
+    try:
+        if not get_answer or not prune_context or not load_index:
+            raise HTTPException(status_code=503, detail="AI service not available.")
+
+        # ✅ session check
+        if req.session_id not in sessions:
+            index_path = os.path.join(INDEX_DIR, f"{req.session_id}.faiss")
+            meta_path = os.path.join(INDEX_DIR, f"{req.session_id}.pkl")
+
+            if os.path.exists(index_path) and os.path.exists(meta_path):
+                sessions[req.session_id] = {
+                    "index_path": index_path,
+                    "meta_path": meta_path
+                }
+            else:
+                return {"answer": "Session not found. Please upload again."}
+
+        session = sessions[req.session_id]
+
+        index, chapters = load_index(session["index_path"], session["meta_path"])
+
+        # ✅ SAFE CHECK 1
+        if not chapters:
+            return {"answer": "No content found in uploaded PDF."}
+
+        pruned = prune_context(req.question, index, chapters)
+
+        # ✅ SAFE CHECK 2 (MOST IMPORTANT)
+        if not pruned:
+            return {
+                "answer": "I couldn't find relevant content. Try another question 😊",
+                "context_stats": {
+                    "reduction_percent": 0,
+                    "chapters_used": 0,
+                    "total_chapters": len(chapters)
+                },
+                "tokens_used": {
+                    "total_tokens": 0
+                },
+                "chapters_referenced": []
             }
-        else:
-            raise HTTPException(status_code=404, detail="Session not found. Please upload a textbook first.")
 
-    session = sessions[req.session_id]
-    index, chapters = load_index(session["index_path"], session["meta_path"])
+        stats = calculate_tokens_saved(chapters, pruned)
+        prompt = build_prompt(req.question, pruned)
 
-    pruned = prune_context(req.question, index, chapters)
-    stats = calculate_tokens_saved(chapters, pruned)
-    prompt = build_prompt(req.question, pruned)
+        result = get_answer(prompt)
 
-    result = get_answer(prompt)
+        return {
+            "answer": result["answer"],
+            "context_stats": stats,
+            "tokens_used": result["tokens_used"],
+            "chapters_referenced": [ch["title"] for ch in pruned]
+        }
 
-    return {
-        "answer": result["answer"],
-        "context_stats": stats,
-        "tokens_used": result["tokens_used"],
-        "chapters_referenced": [ch["title"] for ch in pruned]
-    }
+    except Exception as e:
+        print("ERROR in /ask:", str(e))
+        return {
+            "answer": "Something went wrong. Please try again later.",
+            "error": str(e)
+        }
 
 @app.get("/sessions")
 def list_sessions():
