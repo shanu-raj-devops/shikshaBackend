@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MODEL = "llama-3.1-8b-instant"
 client = None
 
 def get_client():
@@ -15,6 +14,8 @@ def get_client():
             raise ValueError("GROQ_API_KEY environment variable is not set")
         client = Groq(api_key=api_key)
     return client
+
+MODEL = "llama-3.1-8b-instant"
 
 def get_answer(prompt):
     client = get_client()
