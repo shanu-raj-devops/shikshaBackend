@@ -6,3 +6,8 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+uploads/
+indexes/
+*.pdf
+*.faiss
+*.pkl
